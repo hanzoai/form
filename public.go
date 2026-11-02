@@ -296,13 +296,18 @@ func (s *service) submit(ctx context.Context, in *Submission) (*Receipt, error) 
 	if held == nil {
 		rec["at"] = baseTime(now)
 	}
+	// A landing time is the page's word: one in the future, or more than 30 days
+	// back, is no landing this response had, and it is kept as none.
 	landed := when(in.LandedAt)
-	if !landed.IsZero() && !landed.After(now) && now.Sub(landed) < 30*24*time.Hour {
+	if landed.After(now) || now.Sub(landed) >= 30*24*time.Hour {
+		landed = time.Time{}
+	}
+	if !landed.IsZero() {
 		rec["landed"] = baseTime(landed)
 	}
 	if completed {
 		rec["submitted"] = baseTime(now)
-		if !landed.IsZero() && !landed.After(now) {
+		if !landed.IsZero() {
 			rec["duration"] = int(now.Sub(landed).Seconds())
 		}
 	}
