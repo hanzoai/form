@@ -7,9 +7,10 @@ package form
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"time"
 )
 
@@ -21,7 +22,7 @@ const sinkBudget = 30 * time.Second
 var routing = make(chan struct{}, 64)
 
 // route sends a completed response to the form's sinks.
-func (s *service) route(org string, f Form, r Response) {
+func (s *service) route(org string, f Form, r Response, ip string) {
 	run := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), sinkBudget)
 		defer cancel()
@@ -30,7 +31,7 @@ func (s *service) route(org string, f Form, r Response) {
 				s.d.Log.Error("form: routing a response panicked", "org", org, "form", f.ID, "err", p)
 			}
 		}()
-		s.sink(ctx, org, f, r)
+		s.sink(ctx, org, f, r, ip)
 	}
 	select {
 	case routing <- struct{}{}:
@@ -44,7 +45,7 @@ func (s *service) route(org string, f Form, r Response) {
 }
 
 // sink is route's work, in order.
-func (s *service) sink(ctx context.Context, org string, f Form, r Response) {
+func (s *service) sink(ctx context.Context, org string, f Form, r Response, ip string) {
 	sinks := f.Sinks
 	if sinks == nil {
 		return
@@ -70,7 +71,7 @@ func (s *service) sink(ctx context.Context, org string, f Form, r Response) {
 		}
 	}
 	if c := sinks.CRM; c != nil && c.List != "" && !verified && r.Respondent.Email != "" && s.d.Confirm != nil {
-		ask := Confirmation{Email: r.Respondent.Email, List: c.List, Form: f.ID, Public: f.PublicID}
+		ask := Confirmation{Email: r.Respondent.Email, List: c.List, Form: f.ID, Public: f.PublicID, IP: ip}
 		if err := s.d.Confirm(ctx, org, ask); err != nil {
 			s.d.Log.Warn("form: a claimed address was not asked to confirm", "org", org, "form", f.ID, "err", err)
 		}
@@ -78,23 +79,61 @@ func (s *service) sink(ctx context.Context, org string, f Form, r Response) {
 	s.out.respond(ctx, org, f, r)
 }
 
-// refiling counts the filings waiting on a retry. Past refileMost a failed
-// filing waits for POST .../file, its reason on the response.
-var refiling atomic.Int64
+// refiling counts the filings waiting on a retry, in all and per org. Past
+// either bound a failed filing waits for POST .../file, its reason on the
+// response, so no org's outage holds another's retries.
+var refiling = struct {
+	sync.Mutex
+	all  int
+	orgs map[string]int
+}{orgs: map[string]int{}}
 
-// refileMost bounds the filings waiting on a retry in this process.
-const refileMost = 1000
+// Bounds on the filings waiting on a retry in this process.
+const (
+	refileMost = 1000
+	refileOrg  = 100
+)
+
+// hold takes a retry place for org, and reports whether there was one.
+func hold(org string) bool {
+	refiling.Lock()
+	defer refiling.Unlock()
+	if refiling.all >= refileMost || refiling.orgs[org] >= refileOrg {
+		return false
+	}
+	refiling.all++
+	refiling.orgs[org]++
+	return true
+}
+
+// release returns a retry place taken for org.
+func release(org string) {
+	refiling.Lock()
+	defer refiling.Unlock()
+	refiling.all--
+	if refiling.orgs[org]--; refiling.orgs[org] <= 0 {
+		delete(refiling.orgs, org)
+	}
+}
 
 // file files a completed response on the CRM and records on the response
 // whether it did. A filing that failed is tried again on the delivery schedule;
 // one a restart abandoned stays unfiled with its reason, and POST .../file files
 // it now.
 func (s *service) file(ctx context.Context, org string, f Form, r Response, n int) error {
+	// A response deleted since it was completed is filed nowhere and not written
+	// again: what was erased stays erased.
+	if _, gerr := s.d.Store.Get(ctx, org, Responses, r.ID); errors.Is(gerr, ErrNotFound) {
+		return nil
+	}
 	err := s.d.File(ctx, org, s.filing(f, r))
 	rec := Record{"id": r.ID, "filed": err == nil, "filing": ""}
 	if err != nil {
 		s.d.Log.Warn("form: a response was not filed in the CRM", "org", org, "form", f.ID, "response", r.ID, "err", err)
 		rec["filing"] = clip("not filed: "+err.Error(), 500)
+	}
+	if _, gerr := s.d.Store.Get(ctx, org, Responses, r.ID); errors.Is(gerr, ErrNotFound) {
+		return err
 	}
 	if perr := s.d.Store.Put(ctx, org, Responses, rec); perr != nil {
 		s.d.Log.Warn("form: whether a response was filed could not be recorded", "org", org, "response", r.ID, "err", perr)
@@ -102,12 +141,11 @@ func (s *service) file(ctx context.Context, org string, f Form, r Response, n in
 	if err == nil || n+1 >= len(schedule) {
 		return err
 	}
-	if refiling.Add(1) > refileMost {
-		refiling.Add(-1)
+	if !hold(org) {
 		return err
 	}
 	time.AfterFunc(schedule[n+1], func() {
-		defer refiling.Add(-1)
+		defer release(org)
 		c, cancel := context.WithTimeout(context.Background(), sinkBudget)
 		defer cancel()
 		_ = s.file(c, org, f, r, n+1)

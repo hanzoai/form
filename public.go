@@ -60,8 +60,10 @@ type Drawn struct {
 
 // Submission is one respondent's answers to a public form.
 type Submission struct {
-	size      int
-	malformed bool
+	// raw is the body as it came, decoded by the op only once its rate and size
+	// are judged; size is its length.
+	raw  []byte
+	size int
 
 	// ID is the form's public id, from the path.
 	ID string `json:"id"`
@@ -98,17 +100,37 @@ type Submission struct {
 //
 // A body past BodyCeiling is not decoded at all: its size is recorded, the op
 // refuses it, and not one of its answers is ever allocated.
+//
+// Nothing is decoded here: the bytes are kept (none past BodyCeiling) and the op
+// decodes them after it has judged the caller's rate and the body's size, so a
+// submission that arrives by any door, a route, MCP or the call plane, is
+// judged in one order before a byte of it is allocated as answers.
 func (in *Submission) UnmarshalJSON(b []byte) error {
-	if len(b) > BodyCeiling {
-		*in = Submission{size: len(b)}
-		return nil
+	in.size = len(b)
+	in.raw = nil
+	if len(b) <= BodyCeiling {
+		in.raw = append([]byte(nil), b...)
+	}
+	return nil
+}
+
+// decode reads the kept body into the submission, keeping a public id the path
+// already named. It reports whether the body was one.
+func (in *Submission) decode() bool {
+	if in.raw == nil {
+		return in.size == 0
 	}
 	type body Submission
 	var v body
-	malformed := json.Unmarshal(b, &v) != nil
+	if err := json.Unmarshal(in.raw, &v); err != nil {
+		return false
+	}
+	id := in.ID
 	*in = Submission(v)
-	in.size, in.malformed = len(b), malformed
-	return nil
+	if id != "" {
+		in.ID = id
+	}
+	return true
 }
 
 // guardedKey marks a request the public guard has already judged.
@@ -257,8 +279,11 @@ func (s *service) submit(ctx context.Context, in *Submission) (*Receipt, error) 
 	if in.size > st.Limits.Body {
 		return nil, zip.Errorf(http.StatusRequestEntityTooLarge, "form: the submission is larger than %d bytes", st.Limits.Body)
 	}
-	if in.malformed {
+	if !in.decode() {
 		return nil, zip.ErrBadRequest("form: the submission does not decode")
+	}
+	if len(in.Answers) > st.Limits.Fields || len(in.Hidden) > st.Limits.Hidden {
+		return nil, zip.ErrBadRequest("form: more answers or hidden values than a form has")
 	}
 	if strings.TrimSpace(in.Website) != "" {
 		return nil, zip.ErrBadRequest("form: the submission was refused")
@@ -376,7 +401,7 @@ func (s *service) submit(ctx context.Context, in *Submission) (*Receipt, error) 
 			ID: id, Form: f.ID, Token: token, Completed: true, LandedAt: stamp(landed), SubmittedAt: stamp(now),
 			Answers: answers, Hidden: hidden, Respondent: who, Path: path, Source: "web",
 		}
-		s.route(org, *f, r)
+		s.route(org, *f, r, c.IP)
 	}
 	s.expire(org, f.ID, st)
 	return out, nil

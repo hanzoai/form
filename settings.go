@@ -126,13 +126,21 @@ func (st Settings) Check() (Settings, []string) {
 		}
 	}
 	l := st.Limits
+	// A budget a document leaves out (one saved before it existed, or written
+	// without it) is the default, never none.
+	if l.Forward == 0 {
+		l.Forward = Defaults().Limits.Forward
+	}
+	if l.Welcome == 0 {
+		l.Welcome = Defaults().Limits.Welcome
+	}
 	for _, b := range []struct {
 		name      string
 		v, lo, hi int
 	}{
 		{"fields", l.Fields, 1, 500}, {"hidden", l.Hidden, 0, 50}, {"body", l.Body, 1 << 10, BodyCeiling},
 		{"rate", l.Rate, 1, 10000}, {"window", l.Window, 1, 86400}, {"webhooks", l.Webhooks, 0, 50},
-		{"forward", l.Forward, 0, 10000}, {"welcome", l.Welcome, 0, 10000},
+		{"forward", l.Forward, 1, 10000}, {"welcome", l.Welcome, 1, 10000},
 	} {
 		if b.v < b.lo || b.v > b.hi {
 			problems = append(problems, fmt.Sprintf("limits.%s is %d to %d", b.name, b.lo, b.hi))
@@ -168,6 +176,12 @@ func (s *service) settings(ctx context.Context) Settings {
 	}
 	if st.Limits == (Limits{}) {
 		st.Limits = Defaults().Limits
+	}
+	if st.Limits.Forward == 0 {
+		st.Limits.Forward = Defaults().Limits.Forward
+	}
+	if st.Limits.Welcome == 0 {
+		st.Limits.Welcome = Defaults().Limits.Welcome
 	}
 	return st
 }
