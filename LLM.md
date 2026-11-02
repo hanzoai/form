@@ -65,7 +65,33 @@ response; subscribe = derived(form, address); import = derived(form, external).
   identified/anonymous, scoring) and adds fields, never changes one.
 - Logic jumps are not served.
 
+## Import from commerce (`cmd/form`)
+
+`form import` brings hanzoai/commerce's forms, subscribers and submissions in.
+It is its own module: no API serves commerce's forms in production (cloud mounts
+commerce's resources, not its form routes), so it reads commerce's store through
+commerce's own `datastore` and models, pinned at v1.50.187, the last commerce
+that has them, and that tree stays out of this module.
+
+- Read a copy of commerce's data dir (cloud's is `$CLOUD_DATA_DIR/commerce`):
+  `-data DIR -org NAMESPACE`; `-store system` reads the shared store commerce's
+  form routes wrote. A keyed store needs `COMMERCE_KMS_MASTER_KEY` (hex) and a
+  libsqlcipher build: `CGO_ENABLED=1 CGO_CFLAGS="-DSQLITE_HAS_CODEC -DSQLITE_USE_URI=1"
+  CGO_LDFLAGS=-lsqlcipher go build -tags "libsqlite3 sqlite_fts5"`.
+- `-dry` counts per form, and the records that name no form. Then `TOKEN=<IAM
+  bearer of the target org's admin> form import ...`: each form is a PUT on
+  `commerce-<id>`, its records go 500 a batch to `import`, a cursor (`-cursor`)
+  is written after each acknowledged batch and removed when the run ends.
+- Mapping: Name → title (and `crm.list` on subscribe); type subscribe →
+  subscribe, else form; an email field (required on subscribe) plus a
+  short_text field per metadata key; https ThankYou redirect → `thanks.redirect`;
+  enabled Forward → `sinks.forward`; events off. A welcome is not carried: commerce
+  holds a provider template id, never a text body. A record is
+  `Imported{external "<kind>_<id>", at CreatedAt, email, answers = metadata, source commerce}`.
+  Subscribers are a form's by `FormId`, submissions by commerce's parent key.
+
 ## Develop
 
 `go test ./...` (the in-memory Store in memory_test.go reads the where clauses
 this package writes). After changing an op's doc comment: `go generate -run zipdoc ./...`.
+The importer: `cd cmd/form && go test ./...`.
