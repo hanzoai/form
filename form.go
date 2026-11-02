@@ -221,13 +221,13 @@ func routes(app *zip.App, s *service) {
 	g := app.Group(Prefix)
 
 	g.Get("/public/:id", s.publicForm, zip.WithOperationID("get_public_form"))
-	g.Post("/public/:id/responses", s.submit, zip.WithOperationID("submit_response"), zip.WithStatus(http.StatusCreated))
+	g.Post("/public/:id/responses", s.submit, zip.WithOperationID("submit_form_response"), zip.WithStatus(http.StatusCreated))
 
-	g.Get("/themes", s.listThemes, zip.WithOperationID("list_themes"))
-	g.Post("/themes", s.createTheme, zip.WithOperationID("create_theme"), zip.WithStatus(http.StatusCreated))
-	g.Get("/themes/:id", s.getTheme, zip.WithOperationID("get_theme"))
-	g.Put("/themes/:id", s.replaceTheme, zip.WithOperationID("replace_theme"))
-	g.Delete("/themes/:id", s.deleteTheme, zip.WithOperationID("delete_theme"), zip.WithStatus(http.StatusNoContent))
+	g.Get("/themes", s.listThemes, zip.WithOperationID("list_form_themes"))
+	g.Post("/themes", s.createTheme, zip.WithOperationID("create_form_theme"), zip.WithStatus(http.StatusCreated))
+	g.Get("/themes/:id", s.getTheme, zip.WithOperationID("get_form_theme"))
+	g.Put("/themes/:id", s.replaceTheme, zip.WithOperationID("replace_form_theme"))
+	g.Delete("/themes/:id", s.deleteTheme, zip.WithOperationID("delete_form_theme"), zip.WithStatus(http.StatusNoContent))
 
 	g.Get("/forms", s.listForms, zip.WithOperationID("list_forms"))
 	g.Post("/forms", s.createForm, zip.WithOperationID("create_form"), zip.WithStatus(http.StatusCreated))
@@ -237,19 +237,19 @@ func routes(app *zip.App, s *service) {
 	g.Delete("/forms/:id", s.deleteForm, zip.WithOperationID("delete_form"), zip.WithStatus(http.StatusNoContent))
 
 	g.Get("/forms/:id/summary", s.summary, zip.WithOperationID("summarize_form"))
-	g.Get("/forms/:id/export", s.export, zip.WithOperationID("export_responses"))
-	g.Post("/forms/:id/import", s.importResponses, zip.WithOperationID("import_responses"))
-	g.Get("/forms/:id/responses", s.listResponses, zip.WithOperationID("list_responses"))
-	g.Get("/forms/:id/responses/:response", s.getResponse, zip.WithOperationID("get_response"))
-	g.Delete("/forms/:id/responses/:response", s.deleteResponse, zip.WithOperationID("delete_response"), zip.WithStatus(http.StatusNoContent))
+	g.Get("/forms/:id/export", s.export, zip.WithOperationID("export_form_responses"))
+	g.Post("/forms/:id/import", s.importResponses, zip.WithOperationID("import_form_responses"))
+	g.Get("/forms/:id/responses", s.listResponses, zip.WithOperationID("list_form_responses"))
+	g.Get("/forms/:id/responses/:response", s.getResponse, zip.WithOperationID("get_form_response"))
+	g.Delete("/forms/:id/responses/:response", s.deleteResponse, zip.WithOperationID("delete_form_response"), zip.WithStatus(http.StatusNoContent))
 
-	g.Get("/forms/:id/webhooks", s.listWebhooks, zip.WithOperationID("list_webhooks"))
-	g.Post("/forms/:id/webhooks", s.createWebhook, zip.WithOperationID("create_webhook"), zip.WithStatus(http.StatusCreated))
-	g.Get("/forms/:id/webhooks/:webhook", s.getWebhook, zip.WithOperationID("get_webhook"))
-	g.Put("/forms/:id/webhooks/:webhook", s.replaceWebhook, zip.WithOperationID("replace_webhook"))
-	g.Delete("/forms/:id/webhooks/:webhook", s.deleteWebhook, zip.WithOperationID("delete_webhook"), zip.WithStatus(http.StatusNoContent))
-	g.Get("/forms/:id/webhooks/:webhook/deliveries", s.listDeliveries, zip.WithOperationID("list_deliveries"))
-	g.Post("/forms/:id/webhooks/:webhook/deliveries/:delivery/retry", s.redeliver, zip.WithOperationID("redeliver"))
+	g.Get("/forms/:id/webhooks", s.listWebhooks, zip.WithOperationID("list_form_webhooks"))
+	g.Post("/forms/:id/webhooks", s.createWebhook, zip.WithOperationID("create_form_webhook"), zip.WithStatus(http.StatusCreated))
+	g.Get("/forms/:id/webhooks/:webhook", s.getWebhook, zip.WithOperationID("get_form_webhook"))
+	g.Put("/forms/:id/webhooks/:webhook", s.replaceWebhook, zip.WithOperationID("replace_form_webhook"))
+	g.Delete("/forms/:id/webhooks/:webhook", s.deleteWebhook, zip.WithOperationID("delete_form_webhook"), zip.WithStatus(http.StatusNoContent))
+	g.Get("/forms/:id/webhooks/:webhook/deliveries", s.listDeliveries, zip.WithOperationID("list_form_deliveries"))
+	g.Post("/forms/:id/webhooks/:webhook/deliveries/:delivery/retry", s.redeliver, zip.WithOperationID("redeliver_form_webhook"))
 }
 
 // admin admits an administrator of the org the caller acts in, and answers it.
