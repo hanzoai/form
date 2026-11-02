@@ -3,10 +3,12 @@ package form
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +31,11 @@ type rig struct {
 	mails  []Mail
 	secret map[string][]byte
 	allow  bool
+	// asked are the double opt-ins asked; ips the addresses the rate was asked
+	// about; refuse makes the CRM refuse filings while it is set.
+	asked  []Confirmation
+	ips    []string
+	refuse bool
 }
 
 func (r *rig) Put(_ context.Context, org, name string, v []byte) error {
@@ -69,7 +76,12 @@ func mount(t *testing.T, edit ...func(*Deps)) *rig {
 			c, _ := ctx.Value(clientKey{}).(Client)
 			return c
 		},
-		Allow:    func(context.Context, string, int, time.Duration) bool { return r.allow },
+		Allow: func(_ context.Context, _, ip string, _ int, _ time.Duration) bool {
+			r.mu.Lock()
+			r.ips = append(r.ips, ip)
+			r.mu.Unlock()
+			return r.allow
+		},
 		Settings: func(context.Context) Settings { return Defaults() },
 		Person:   func(email string) string { return derived("person", email) },
 		Emit: func(_ context.Context, _ string, e Event) {
@@ -79,7 +91,16 @@ func mount(t *testing.T, edit ...func(*Deps)) *rig {
 		},
 		File: func(_ context.Context, _ string, f Filing) error {
 			r.mu.Lock()
+			defer r.mu.Unlock()
+			if r.refuse {
+				return errors.New("the CRM is down")
+			}
 			r.filed = append(r.filed, f)
+			return nil
+		},
+		Confirm: func(_ context.Context, _ string, c Confirmation) error {
+			r.mu.Lock()
+			r.asked = append(r.asked, c)
 			r.mu.Unlock()
 			return nil
 		},
@@ -95,7 +116,8 @@ func mount(t *testing.T, edit ...func(*Deps)) *rig {
 	for _, e := range edit {
 		e(&d)
 	}
-	host := zip.New(zip.Config{})
+	// The host reads a body as cloud's edge does: up to 16 MiB.
+	host := zip.New(zip.Config{BodyLimit: 16 << 20})
 	host.Use(zip.H(func(c *zip.Ctx) error {
 		who := Caller{Org: c.Header("X-Test-Org"), Admin: c.Header("X-Test-Admin") == "true", Subject: c.Header("X-Test-Subject"), Email: c.Header("X-Test-Email")}
 		cl := Client{IP: c.Header("X-Test-IP"), OptedOut: c.Header("Sec-GPC") == "1"}
@@ -134,6 +156,13 @@ func (r *rig) do(method, path, as string, body any, hdr ...string) (int, string)
 	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(b)
+}
+
+// count is how many records org's collection holds.
+func (r *rig) count(org, collection string) int {
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	return len(r.store.table(org, collection))
 }
 
 func (r *rig) wait(cond func() bool) {
@@ -224,7 +253,7 @@ func TestASubmissionIsOneResponseAndReachesItsSinks(t *testing.T) {
 	if code != http.StatusCreated || again.ID != first.ID || !again.Completed {
 		t.Fatalf("a second click: %d %s", code, body)
 	}
-	if n := len(r.store.table("hanzo", Responses)); n != 1 {
+	if n := r.count("hanzo", Responses); n != 1 {
 		t.Fatalf("two clicks held %d responses", n)
 	}
 	r.wait(func() bool { return len(r.filed) == 1 })
@@ -275,7 +304,7 @@ func TestTheSignedInPersonIsTheTokensNotTheBodys(t *testing.T) {
 	}
 }
 
-func TestTheEmailFieldIsThePersonAndLeavesTheTimeline(t *testing.T) {
+func TestATypedAddressIsAClaim(t *testing.T) {
 	r := mount(t)
 	r.do("POST", "/v1/form/forms", "hanzo", video)
 	r.do("POST", "/v1/form/public/hanzo.video-feedback/responses", "", map[string]any{"answers": []any{
@@ -285,13 +314,39 @@ func TestTheEmailFieldIsThePersonAndLeavesTheTimeline(t *testing.T) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	f := r.filed[0]
-	if f.PersonID != derived("person", "ada@example.com") {
-		t.Fatalf("the email field resolves the person: %+v", f)
+	if f.Verified || f.PersonID != derived("person", "ada@example.com") {
+		t.Fatalf("a typed address is filed as an unverified claim: %+v", f)
 	}
 	for _, qa := range f.Answers {
 		if strings.Contains(qa.Answer, "ada@") {
 			t.Fatalf("the timeline carries the address: %+v", f.Answers)
 		}
+	}
+	for _, e := range r.events {
+		if e.PersonID != "" {
+			t.Fatalf("a claim is somebody on the event stream: %+v", e)
+		}
+	}
+}
+
+func TestAVerifiedFormTakesNoClaim(t *testing.T) {
+	r := mount(t)
+	form := map[string]any{}
+	for k, v := range video {
+		form[k] = v
+	}
+	form["settings"] = map[string]any{"identity": "verified"}
+	if code, body := r.do("POST", "/v1/form/forms", "hanzo", form); code != 201 || !strings.Contains(body, `"identity":"verified"`) {
+		t.Fatalf("create: %d %s", code, body)
+	}
+	r.do("POST", "/v1/form/public/hanzo.video-feedback/responses", "", map[string]any{"visitor": "v_1", "answers": []any{
+		map[string]any{"field": "rating", "number": 3}, map[string]any{"field": "email", "text": "ada@example.com"},
+	}})
+	r.wait(func() bool { return len(r.filed) == 1 })
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if f := r.filed[0]; f.PersonID != "" || f.Email != "" || f.Visitor != "v_1" {
+		t.Fatalf("a verified-only form filed a typed address: %+v", f)
 	}
 }
 
@@ -312,7 +367,7 @@ func TestASubmissionIsReadAgainstItsForm(t *testing.T) {
 			t.Errorf("%s: %d %s", name, code, body)
 		}
 	}
-	if n := len(r.store.table("hanzo", Responses)); n != 0 {
+	if n := r.count("hanzo", Responses); n != 0 {
 		t.Fatalf("a refused submission held %d responses", n)
 	}
 	big := `{"answers":[{"field":"comment","text":"` + strings.Repeat("x", 70<<10) + `"}]}`
@@ -376,26 +431,48 @@ func TestAPrivateFormIsNotServed(t *testing.T) {
 	}
 }
 
-func TestASubscriberIsOneAddress(t *testing.T) {
+func TestASubscribeClaimIsConfirmedNeverJoined(t *testing.T) {
 	r := mount(t)
 	list := map[string]any{"slug": "news", "kind": "subscribe", "title": "News", "fields": []any{
 		map[string]any{"ref": "email", "type": "email", "title": "Email", "required": true},
-	}, "sinks": map[string]any{"crm": map[string]any{"list": "Newsletter"}, "welcome": map[string]any{"subject": "Welcome", "body": "Thanks for joining."}}}
+		map[string]any{"ref": "name", "type": "short_text", "title": "Name"},
+	}, "sinks": map[string]any{"crm": map[string]any{"list": "Newsletter", "name": "name"}, "welcome": map[string]any{"subject": "Welcome", "body": "Thanks for joining."}}}
 	if code, body := r.do("POST", "/v1/form/forms", "hanzo", list); code != 201 {
 		t.Fatalf("create: %d %s", code, body)
 	}
-	for _, addr := range []string{"ada@example.com", "ADA@example.com"} {
-		if code, body := r.do("POST", "/v1/form/public/hanzo.news/responses", "", map[string]any{"answers": []any{map[string]any{"field": "email", "text": addr}}}); code != 201 {
+	// A squatter types the address first, then its owner submits: both are kept.
+	for _, name := range []string{"Mallory", "Ada"} {
+		if code, body := r.do("POST", "/v1/form/public/hanzo.news/responses", "", map[string]any{"answers": []any{
+			map[string]any{"field": "email", "text": "ada@example.com"}, map[string]any{"field": "name", "text": name},
+		}}); code != 201 {
 			t.Fatalf("subscribe: %d %s", code, body)
 		}
 	}
-	if n := len(r.store.table("hanzo", Responses)); n != 1 {
-		t.Fatalf("one address is %d subscribers", n)
+	if n := r.count("hanzo", Responses); n != 2 {
+		t.Fatalf("a later submission from one address was not recorded: %d responses", n)
 	}
-	r.wait(func() bool { return len(r.mails) == 1 && len(r.filed) == 1 })
+	r.wait(func() bool { return len(r.asked) == 2 && len(r.filed) == 2 })
 	time.Sleep(30 * time.Millisecond)
-	if len(r.mails) != 1 || r.mails[0].Kind != "welcome" || r.filed[0].List != "Newsletter" {
-		t.Fatalf("mails %+v filed %+v", r.mails, r.filed)
+	r.mu.Lock()
+	if len(r.mails) != 0 || r.filed[0].Verified || r.asked[0].List != "Newsletter" || r.asked[0].Email != "ada@example.com" {
+		t.Fatalf("a claim was mailed or joined: mails %+v filed %+v asked %+v", r.mails, r.filed, r.asked)
+	}
+	r.mu.Unlock()
+
+	// Signed in, the person is welcomed once and asked nothing.
+	for range 2 {
+		if code, body := r.do("POST", "/v1/form/public/hanzo.news/responses", "", map[string]any{"answers": []any{
+			map[string]any{"field": "email", "text": "ada@example.com"},
+		}}, "X-Test-Subject", "4f1c0e8a", "X-Test-Email", "ada@example.com"); code != 201 {
+			t.Fatalf("signed in: %d %s", code, body)
+		}
+	}
+	r.wait(func() bool { return len(r.mails) == 1 })
+	time.Sleep(50 * time.Millisecond)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.mails) != 1 || r.mails[0].Kind != "welcome" || len(r.asked) != 2 {
+		t.Fatalf("mails %+v asked %+v", r.mails, r.asked)
 	}
 }
 
@@ -435,8 +512,10 @@ func TestAWebhookIsSignedAndRecorded(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no delivery")
 	}
-	if got.sig != Sign([]byte("0123456789abcdef"), got.body) {
-		t.Fatalf("signature %q does not sign the body", got.sig)
+	ts, _, _ := strings.Cut(strings.TrimPrefix(got.sig, "t="), ",")
+	sec, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil || time.Since(time.Unix(sec, 0)) > Replay || got.sig != Sign([]byte("0123456789abcdef"), sec, got.body) {
+		t.Fatalf("signature %q does not sign the timestamp and the body", got.sig)
 	}
 	var p Posted
 	_ = json.Unmarshal(got.body, &p)
@@ -454,7 +533,8 @@ func TestAWebhookIsSignedAndRecorded(t *testing.T) {
 }
 
 func TestOnlyThePublicInternetIsPosted(t *testing.T) {
-	for _, a := range []string{"127.0.0.1", "10.1.2.3", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "0.0.0.0", "::ffff:127.0.0.1"} {
+	for _, a := range []string{"127.0.0.1", "10.1.2.3", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "0.0.0.0", "::ffff:127.0.0.1",
+		"64:ff9b::a00:1", "64:ff9b:1::1", "2002:a00:1::1", "2001:0:4136:e378::1", "0.1.2.3", "192.0.0.8", "198.18.0.1", "240.0.0.1"} {
 		if Public(netip.MustParseAddr(a)) {
 			t.Errorf("%s is posted to", a)
 		}

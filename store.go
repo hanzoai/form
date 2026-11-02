@@ -102,6 +102,7 @@ var collections = func() json.RawMessage {
 			doc("answers"), doc("hidden"), doc("respondent"), text("email", 320), text("person", 15),
 			{"name": "at", "type": "date"}, {"name": "landed", "type": "date"}, {"name": "submitted", "type": "date"}, {"name": "duration", "type": "number"},
 			text("last", 64), text("path", 500), text("source", 16), text("external", 200),
+			{"name": "filed", "type": "bool"}, text("filing", 500),
 		}, "CREATE INDEX `idx_form_responses_form_at` ON `form_responses` (`form`, `at`)"),
 		of(Webhooks, []Record{rel("form", Forms), text("tag", 64), text("url", 2000), {"name": "enabled", "type": "bool"}}),
 		of(Deliveries, []Record{

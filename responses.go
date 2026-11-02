@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -31,6 +32,9 @@ type ResponsesIn struct {
 	Completed *bool `json:"completed"`
 	// Query keeps the responses whose answers hold it.
 	Query string `json:"query"`
+	// Filed keeps the responses on the CRM's timeline (true) or not yet on it
+	// (false); absent keeps both.
+	Filed *bool `json:"filed"`
 	// Sort is submitted_at,desc (the default) or submitted_at,asc.
 	Sort string `json:"sort"`
 	// IncludedResponseIDs keeps only these responses, comma separated, at most 90.
@@ -93,6 +97,8 @@ func responseOf(r Record) Response {
 		Created: wire(r, "at"), Updated: wire(r, "updated"),
 	}
 	out.Completed, _ = r["completed"].(bool)
+	out.Filed, _ = r["filed"].(bool)
+	out.Filing = field(r, "filing")
 	if d, ok := r["duration"].(float64); ok {
 		out.Duration = int(d)
 	}
@@ -122,6 +128,9 @@ func filter(form string, in ResponsesIn) (Record, error) {
 	}
 	if in.Completed != nil {
 		c = append(c, leaf("completed", "is", *in.Completed))
+	}
+	if in.Filed != nil {
+		c = append(c, leaf("filed", "is", *in.Filed))
 	}
 	if q := strings.TrimSpace(in.Query); q != "" {
 		if len(q) > 200 {
@@ -334,6 +343,9 @@ func (s *service) export(ctx context.Context, in *ExportIn) (*Export, error) {
 	}
 	head = append(head, f.Hidden...)
 	head = append(head, "email", "respondent", "completed", "landed_at", "submitted_at")
+	for i := range head {
+		head[i] = cell(head[i])
+	}
 	_ = w.Write(head)
 	for _, r := range rs {
 		row := []string{r.ID}
@@ -362,4 +374,34 @@ func cell(s string) string {
 		return "'" + s
 	}
 	return s
+}
+
+// Files a completed response on the CRM's timeline now, and answers the response
+// with whether it is filed and, when it is not, why. A filing that failed after
+// its submission is retried on a schedule; one a restart abandoned waits here.
+// Filing twice is one timeline entry. 409 for an open response, or a form that
+// files nowhere. An org admin only.
+func (s *service) refile(ctx context.Context, in *ResponseRef) (*Response, error) {
+	org, err := s.change(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f, err := s.lookup(ctx, org, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	rec, err := s.responseAt(ctx, org, f.ID, in.Response)
+	if err != nil {
+		return nil, err
+	}
+	r := responseOf(rec)
+	if !r.Completed || f.Sinks == nil || f.Sinks.CRM == nil || s.d.File == nil {
+		return nil, zip.Errorf(http.StatusConflict, "form: only a completed response of a form that files in the CRM is filed")
+	}
+	_ = s.file(ctx, org, *f, r, len(schedule))
+	if rec, err = s.responseAt(ctx, org, f.ID, r.ID); err != nil {
+		return nil, err
+	}
+	out := responseOf(rec)
+	return &out, nil
 }

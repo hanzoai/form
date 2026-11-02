@@ -150,9 +150,11 @@ func (s *service) forget(ctx context.Context, org, id string) error {
 }
 
 // Adds a webhook to a form: every completed response is posted to its https
-// address as JSON, signed with Hanzo-Signature: sha256=<base64 of
-// HMAC-SHA256(secret, body)>. The secret is the one given (16 to 256
-// characters) or one minted, kept in KMS and answered here once. A form has at
+// address as JSON, signed with Hanzo-Signature: t=<unix seconds>,sha256=<base64
+// of HMAC-SHA256(secret, "<seconds>." + body)>; a receiver refuses a timestamp
+// older than five minutes and an event_id it has seen. The secret is the one
+// given (16 to 256 characters) or one minted, kept in KMS and answered here
+// once. A form has at
 // most the platform's number of webhooks. An org admin only.
 //
 // Example: {"tag":"sales","url":"https://hooks.example.com/forms"}

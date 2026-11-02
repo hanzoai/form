@@ -140,8 +140,8 @@ func checkAnswer(fd Field, a Answer, rule TypeRule) (*Answer, string) {
 			return nil, s + ": number"
 		}
 		n := *a.Number
-		if math.IsNaN(n) || math.IsInf(n, 0) {
-			return nil, "is not a number"
+		if !bounded(n) {
+			return nil, "is a number between -1e15 and 1e15"
 		}
 		switch fd.Type {
 		case Rating:
@@ -201,6 +201,12 @@ func checkAnswer(fd Field, a Answer, rule TypeRule) (*Answer, string) {
 	}
 	return &out, ""
 }
+
+// maxNumber bounds a number answer, so no sum or mean of them overflows.
+const maxNumber = 1e15
+
+// bounded reports whether n is a finite number inside maxNumber.
+func bounded(n float64) bool { return !math.IsNaN(n) && !math.IsInf(n, 0) && math.Abs(n) <= maxNumber }
 
 // digits counts the digits in s.
 func digits(s string) int {
