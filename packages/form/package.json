@@ -1,0 +1,61 @@
+{
+  "name": "@hanzo/form",
+  "version": "0.1.0",
+  "description": "Hanzo Forms: load and answer a published form, draw it with React, or embed it in any page.",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "scope": "@hanzo"
+  },
+  "author": "Hanzo AI <dev@hanzo.ai>",
+  "license": "MIT",
+  "type": "module",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hanzoai/form.git",
+    "directory": "packages/form"
+  },
+  "keywords": [
+    "forms",
+    "surveys",
+    "embed",
+    "react",
+    "hanzo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup && tsc --emitDeclarationOnly --declaration --outDir dist",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "e2e": "playwright test",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react": ">=19.2.8",
+    "react-dom": ">=19.2.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.4.0",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "esbuild": "^0.27.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tsup": "^8.5.1",
+    "typescript": "7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "packageManager": "pnpm@11.24.0"
+}

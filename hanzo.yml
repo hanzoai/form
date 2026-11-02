@@ -1,6 +1,7 @@
 # CI/CD for hanzoai/form, read by the hanzoai/ci reusable (.github/workflows/cicd.yml)
 # and by platform.hanzo.ai. A Go module embedded by hanzo-inc/cloud: it ships from a
-# tag and builds no image.
+# tag and builds no image. packages/form is @hanzo/form, the renderer and embed,
+# its own pnpm root.
 
 test:
   - name: build
@@ -13,3 +14,24 @@ test:
   # packages), so the root ./... does not reach it.
   - name: importer
     run: cd cmd/form && CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test -count=1 ./...
+  - name: package
+    run: |
+      set -e
+      corepack enable
+      cd packages/form
+      pnpm install --frozen-lockfile
+      pnpm typecheck
+      pnpm build
+      pnpm test
+  # The renderer in chromium. The runner cannot sudo and its image carries
+  # chromium's libraries; its baked browsers sit under /opt as root, so the
+  # job's own copy goes where the job may write.
+  - name: renderer
+    run: |
+      set -e
+      corepack enable
+      cd packages/form
+      pnpm install --frozen-lockfile
+      export PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/ms-playwright"
+      pnpm exec playwright install chromium
+      pnpm e2e

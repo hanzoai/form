@@ -1,0 +1,6 @@
+# packages/form is its own pnpm root: the rest of the repository is Go.
+#
+# esbuild's install script puts its platform binary in place, and tsup and the
+# browser specs build on it. pnpm 11 refuses an unapproved script fatally.
+allowBuilds:
+  esbuild: true

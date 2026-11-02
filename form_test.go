@@ -347,6 +347,24 @@ func TestAPartialResponseIsCompletedUnderItsToken(t *testing.T) {
 	}
 }
 
+func TestALandingThePageMadeUpIsNone(t *testing.T) {
+	r := mount(t)
+	r.do("POST", "/v1/form/forms", "hanzo", video)
+	for _, at := range []string{"2001-01-01T00:00:00Z", time.Now().Add(time.Hour).UTC().Format(time.RFC3339)} {
+		code, body := r.do("POST", "/v1/form/public/hanzo.video-feedback/responses", "", map[string]any{"landed_at": at, "answers": []any{map[string]any{"field": "rating", "number": 5}}})
+		if code != 201 {
+			t.Fatalf("submit: %d %s", code, body)
+		}
+	}
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	for _, rec := range r.store.table("hanzo", Responses) {
+		if rec["landed"] != nil || rec["duration"] != nil {
+			t.Fatalf("a made-up landing is kept: %v", rec)
+		}
+	}
+}
+
 func TestAPrivateFormIsNotServed(t *testing.T) {
 	r := mount(t)
 	r.do("POST", "/v1/form/forms", "hanzo", video)
