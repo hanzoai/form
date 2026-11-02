@@ -50,17 +50,35 @@ response; subscribe = derived(form, address); import = derived(form, external).
 
 ## Rules worth knowing
 
-- Identity: token (signed-in person) > the email field (CRM mapping's, else the
-  first email field) > the visitor id. Events and filings carry `person_id`
-  (Deps.Person), never the address; the filing drops the answer that named it.
-- A response completed is final; `completed:false` saves part way under the token.
-- Sinks run after the response is stored; a failing sink is logged, never the
-  response. Webhook retries (0, 30s, 2m, 10m, 1h) live in-process; a restart
-  leaves `retrying` with `next` in the past, and `retry` sends it.
+- Identity: only a signed-in respondent (their token, a credential the host saw
+  in a header) is verified. A typed address is a CLAIM: under `settings.identity:
+  claimed` (default) it is filed marked unverified, on the person only when the
+  CRM already holds them and without changing them, joins no list, gets no welcome,
+  and a list's consent is asked by the host's double opt-in (Deps.Confirm); under
+  `verified` it is just an answer. Events carry `person_id` for verified
+  respondents only, never an address; the filing drops the answer that named it.
+- Every submission is its own response under its token, subscribe forms too, so
+  a squatter's claim never hides a later real submission. A completed response
+  is final; `completed:false` saves part way under the token.
+- The public POST is guarded before decoding: application/json only (415), the
+  address's rate (429; the host counts /64 and /48, an empty address is one shared
+  budget), and the body bound (413). A body past `BodyCeiling` (1 MiB) is never
+  decoded, whatever path it took.
+- Sinks run after the response is stored. The CRM filing is recorded on the
+  response (`filed`, `filing`), retried on the delivery schedule, listed with
+  `?filed=false` and filed now by POST `.../responses/{response}/file`. Webhook
+  deliveries run four at a time per org with at most 200 waiting per org (2000 in
+  all); past that a delivery is recorded failed and `retry` sends it. Retries live
+  in-process; a restart leaves `retrying` with `next` in the past.
 - Webhook posts dial public addresses only (checked on the dialled IP), follow no
-  redirect, read 4 KiB. Signature: `Hanzo-Signature: sha256=base64(HMAC(secret, body))`.
+  redirect, read 4 KiB, and say only what kind of failure it was. Signature:
+  `Hanzo-Signature: t=<unix>,sha256=base64(HMAC(secret, "<unix>." + body))`; a
+  receiver refuses one older than `Replay` (5 minutes) or an event_id it has seen.
 - Retention (days) deletes a form's old responses lazily, when the form is
-  answered or its responses are read.
+  answered or its responses are read, counted from when each was stored: an
+  import keeps its original time and is not taken for it.
+- Numbers are bounded at 1e15; text loses its format characters (bidi, zero
+  width); an address is ASCII. The platform's default sinks name no address.
 - Kinds: `form`, `subscribe`. `survey` is the next kind (audience, window,
   identified/anonymous, scoring) and adds fields, never changes one.
 - Logic jumps are not served.

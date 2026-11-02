@@ -85,7 +85,7 @@ func (s *service) summary(ctx context.Context, in *SummaryIn) (*Summary, error) 
 	out := &Summary{Form: f.ID, Fields: []FieldSummary{}}
 	type acc struct {
 		sum, lo, hi float64
-		n           int
+		n, k        int
 		counts      map[string]int
 	}
 	accs := map[string]*acc{}
@@ -119,11 +119,18 @@ func (s *service) summary(ctx context.Context, in *SummaryIn) (*Summary, error) 
 				x.n++
 				switch {
 				case a.Number != nil:
+					// A stored value outside what a submission may say (written
+					// before the bound, or by hand) is counted as answered and
+					// left out of the figures, which stay finite.
 					v := *a.Number
-					if x.n == 1 || v < x.lo {
+					if !bounded(v) {
+						break
+					}
+					x.k++
+					if x.k == 1 || v < x.lo {
 						x.lo = v
 					}
-					if x.n == 1 || v > x.hi {
+					if x.k == 1 || v > x.hi {
 						x.hi = v
 					}
 					x.sum += v
@@ -171,8 +178,8 @@ func (s *service) summary(ctx context.Context, in *SummaryIn) (*Summary, error) 
 		case YesNo:
 			fs.Distribution = []Tally{{Value: "true", Label: "Yes", Count: x.counts["true"]}, {Value: "false", Label: "No", Count: x.counts["false"]}}
 		}
-		if (fd.Type == Number || fd.Type == Rating || fd.Type == OpinionScale) && x.n > 0 {
-			mean, lo, hi := x.sum/float64(x.n), x.lo, x.hi
+		if (fd.Type == Number || fd.Type == Rating || fd.Type == OpinionScale) && x.k > 0 {
+			mean, lo, hi := x.sum/float64(x.k), x.lo, x.hi
 			fs.Mean, fs.Min, fs.Max = &mean, &lo, &hi
 		}
 		out.Fields = append(out.Fields, fs)

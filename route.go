@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -49,9 +50,7 @@ func (s *service) sink(ctx context.Context, org string, f Form, r Response) {
 		return
 	}
 	if sinks.CRM != nil && s.d.File != nil {
-		if err := s.d.File(ctx, org, s.filing(f, r)); err != nil {
-			s.d.Log.Warn("form: a response was not filed in the CRM", "org", org, "form", f.ID, "response", r.ID, "err", err)
-		}
+		s.file(ctx, org, f, r, 0)
 	}
 	if fw := sinks.Forward; fw != nil && s.d.Mail != nil {
 		m := Mail{To: fw.Email, Name: fw.Name, Kind: "forward", Form: f.ID,
@@ -60,27 +59,77 @@ func (s *service) sink(ctx context.Context, org string, f Form, r Response) {
 			s.d.Log.Warn("form: a response was not forwarded", "org", org, "form", f.ID, "err", err)
 		}
 	}
-	if w := sinks.Welcome; w != nil && s.d.Mail != nil && r.Respondent.Email != "" && s.first(ctx, org, f.ID, r) {
+	// A welcome goes to a signed-in respondent alone. A claimed address is asked
+	// the list's double opt-in instead: it is mailed a link, and only a press on it
+	// joins the list and records consent.
+	verified := r.Respondent.Verified
+	if w := sinks.Welcome; w != nil && s.d.Mail != nil && verified && s.first(ctx, org, f.ID, r) {
 		m := Mail{To: r.Respondent.Email, Kind: "welcome", Form: f.ID, Subject: w.Subject, Text: w.Body}
 		if err := s.d.Mail(ctx, org, m); err != nil {
 			s.d.Log.Warn("form: a welcome mail did not go out", "org", org, "form", f.ID, "err", err)
 		}
 	}
+	if c := sinks.CRM; c != nil && c.List != "" && !verified && r.Respondent.Email != "" && s.d.Confirm != nil {
+		ask := Confirmation{Email: r.Respondent.Email, List: c.List, Form: f.ID, Public: f.PublicID}
+		if err := s.d.Confirm(ctx, org, ask); err != nil {
+			s.d.Log.Warn("form: a claimed address was not asked to confirm", "org", org, "form", f.ID, "err", err)
+		}
+	}
 	s.out.respond(ctx, org, f, r)
+}
+
+// refiling counts the filings waiting on a retry. Past refileMost a failed
+// filing waits for POST .../file, its reason on the response.
+var refiling atomic.Int64
+
+// refileMost bounds the filings waiting on a retry in this process.
+const refileMost = 1000
+
+// file files a completed response on the CRM and records on the response
+// whether it did. A filing that failed is tried again on the delivery schedule;
+// one a restart abandoned stays unfiled with its reason, and POST .../file files
+// it now.
+func (s *service) file(ctx context.Context, org string, f Form, r Response, n int) error {
+	err := s.d.File(ctx, org, s.filing(f, r))
+	rec := Record{"id": r.ID, "filed": err == nil, "filing": ""}
+	if err != nil {
+		s.d.Log.Warn("form: a response was not filed in the CRM", "org", org, "form", f.ID, "response", r.ID, "err", err)
+		rec["filing"] = clip("not filed: "+err.Error(), 500)
+	}
+	if perr := s.d.Store.Put(ctx, org, Responses, rec); perr != nil {
+		s.d.Log.Warn("form: whether a response was filed could not be recorded", "org", org, "response", r.ID, "err", perr)
+	}
+	if err == nil || n+1 >= len(schedule) {
+		return err
+	}
+	if refiling.Add(1) > refileMost {
+		refiling.Add(-1)
+		return err
+	}
+	time.AfterFunc(schedule[n+1], func() {
+		defer refiling.Add(-1)
+		c, cancel := context.WithTimeout(context.Background(), sinkBudget)
+		defer cancel()
+		_ = s.file(c, org, f, r, n+1)
+	})
+	return err
 }
 
 // first reports whether r is the first completed response its address made to
 // the form: a welcome is mailed once.
 func (s *service) first(ctx context.Context, org, form string, r Response) bool {
+	// The earliest of the address's completed responses is the first, whichever
+	// of two that complete together is routed first.
 	got, err := s.d.Store.List(ctx, org, Responses, Query{
-		Where:   and(leaf("form", "is", form), leaf("email", "is", r.Respondent.Email), leaf("completed", "is", true), leaf("id", "isNot", r.ID)),
-		PerPage: 1, Count: true,
+		Where:   and(leaf("form", "is", form), leaf("email", "is", r.Respondent.Email), leaf("completed", "is", true)),
+		Sort:    "at,id",
+		PerPage: 1,
 	})
 	if err != nil {
 		s.d.Log.Warn("form: whether an address answered before could not be read; no welcome is mailed", "org", org, "form", form, "err", err)
 		return false
 	}
-	return got.Total == 0
+	return len(got.Items) == 1 && field(got.Items[0], "id") == r.ID
 }
 
 // filing is a completed response as the CRM files it. The answer that named the
@@ -103,7 +152,7 @@ func (s *service) filing(f Form, r Response) Filing {
 	}
 	return Filing{
 		Ref: "form:" + r.ID, Form: f.ID, Public: f.PublicID, Title: f.Title, Kind: f.Kind,
-		PersonID: r.Respondent.PersonID, Email: email,
+		PersonID: r.Respondent.PersonID, Email: email, Verified: r.Respondent.Verified,
 		Name: textOf(f, r.Answers, c.Name), Company: textOf(f, r.Answers, c.Company), List: c.List,
 		Answers: qa, Hidden: r.Hidden, Visitor: r.Respondent.Visitor, Subject: r.Respondent.Subject,
 		Path: r.Path, At: when(r.SubmittedAt),
@@ -163,7 +212,9 @@ func (s *service) expire(org, form string, st Settings) {
 		defer cancel()
 		cut := s.d.Now().Add(-time.Duration(st.Retention) * 24 * time.Hour)
 		got, err := s.d.Store.List(ctx, org, Responses, Query{
-			Where: and(leaf("form", "is", form), leaf("at", "lt", baseTime(cut))), PerPage: expirePage,
+			// Measured from when the record was stored, never from when it says it
+			// was made: an import keeps its original time and is kept like the rest.
+			Where: and(leaf("form", "is", form), leaf("created", "lt", baseTime(cut))), PerPage: expirePage,
 		})
 		if err != nil {
 			s.d.Log.Warn("form: expired responses could not be read", "org", org, "form", form, "err", err)

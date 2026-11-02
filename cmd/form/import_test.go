@@ -138,6 +138,11 @@ func serve(t *testing.T) (*server, *httptest.Server) {
 			http.Error(w, "sign in", 401)
 			return
 		}
+		// Every call names the org the records land in.
+		if r.Header.Get("X-Org-Id") != "acme" {
+			http.Error(w, "which org", 400)
+			return
+		}
 		mux.ServeHTTP(w, r)
 	}))
 	t.Cleanup(h.Close)
@@ -148,7 +153,7 @@ func importerFor(src Source, h *httptest.Server, cursor string, out *bytes.Buffe
 	return &importer{
 		src:    src,
 		name:   "fake",
-		api:    &client{ctx: context.Background(), base: h.URL, token: token, http: h.Client(), pause: time.Millisecond, tries: 4},
+		api:    &client{ctx: context.Background(), base: h.URL, token: token, org: "acme", http: h.Client(), pause: time.Millisecond, tries: 4},
 		cursor: cursor,
 		out:    out,
 	}
@@ -174,8 +179,9 @@ func TestDefine(t *testing.T) {
 		t.Fatalf("refs %v", refs)
 	}
 	s := f.Sinks
-	if s.Events || s.Welcome != nil || s.CRM == nil || s.CRM.List != "News" || s.Forward == nil || *s.Forward != (form.Forward{Email: "ops@acme.com", Name: "Ops"}) {
-		t.Fatalf("sinks %+v", s)
+	// Unpublished, and mailing nobody: no forward, no welcome, no events.
+	if s.Events || s.Welcome != nil || s.Forward != nil || s.CRM == nil || s.CRM.List != "News" || f.Settings.Visibility != "private" {
+		t.Fatalf("sinks %+v settings %+v", s, f.Settings)
 	}
 	if f.Thanks == nil || f.Thanks.Redirect != "https://acme.com/t" {
 		t.Fatalf("thanks %+v", f.Thanks)

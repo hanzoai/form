@@ -110,6 +110,19 @@ type Filing struct {
 	Path string
 	// At is when the response was completed.
 	At time.Time
+	// Verified is whether the person is the signed-in respondent. An unverified
+	// filing is a claim: marked so on the timeline, on the person only when the
+	// CRM already holds them and without changing them, and never on a list.
+	Verified bool
+}
+
+// Confirmation asks the double opt-in for an address a response only claimed:
+// the address is mailed a link, and only a press on it joins the list.
+type Confirmation struct {
+	// Email is the address, List the list it would join.
+	Email, List string
+	// Form is the form's id, Public its public id: where the ask came from.
+	Form, Public string
 }
 
 // QA is one question and what was said to it, as text.
@@ -156,9 +169,11 @@ type Deps struct {
 	Client func(ctx context.Context) Client
 	// Intended is the anti-forgery verdict on a change; nil admits.
 	Intended func(ctx context.Context) error
-	// Allow spends one from key's budget of limit per window, across the
-	// deployment, and reports whether there was one to spend.
-	Allow func(ctx context.Context, key string, limit int, window time.Duration) bool
+	// Allow spends one of limit per window from what the address ip has for name,
+	// across the deployment, and reports whether there was one to spend. The host
+	// counts an address by its networks (an IPv6 /64 and /48), and an empty ip is
+	// one shared budget, never none.
+	Allow func(ctx context.Context, name, ip string, limit int, window time.Duration) bool
 	// Settings is the platform's configuration, its defaults when none is saved.
 	Settings func(ctx context.Context) Settings
 	// Person is the CRM person an address is: the join key every event and
@@ -170,6 +185,9 @@ type Deps struct {
 	File func(ctx context.Context, org string, f Filing) error
 	// Mail sends one mail in the org's name.
 	Mail func(ctx context.Context, org string, m Mail) error
+	// Confirm asks the double opt-in for a claimed address and a list; nil, or a
+	// list the host has no double opt-in for, asks nothing.
+	Confirm func(ctx context.Context, org string, c Confirmation) error
 	// Secrets keeps webhook signing secrets.
 	Secrets Secrets
 	// HTTP posts webhook deliveries. Nil is a client that refuses any address
@@ -220,8 +238,11 @@ const Prefix = "/v1/form"
 func routes(app *zip.App, s *service) {
 	g := app.Group(Prefix)
 
-	g.Get("/public/:id", s.publicForm, zip.WithOperationID("get_public_form"))
-	g.Post("/public/:id/responses", s.submit, zip.WithOperationID("submit_form_response"), zip.WithStatus(http.StatusCreated))
+	// The public half is guarded before a byte of a submission is decoded: its
+	// content type, its address's rate and its size (guard, public.go).
+	p := g.Group("/public", s.guard)
+	p.Get("/:id", s.publicForm, zip.WithOperationID("get_public_form"))
+	p.Post("/:id/responses", s.submit, zip.WithOperationID("submit_form_response"), zip.WithStatus(http.StatusCreated))
 
 	g.Get("/themes", s.listThemes, zip.WithOperationID("list_form_themes"))
 	g.Post("/themes", s.createTheme, zip.WithOperationID("create_form_theme"), zip.WithStatus(http.StatusCreated))
@@ -242,6 +263,7 @@ func routes(app *zip.App, s *service) {
 	g.Get("/forms/:id/responses", s.listResponses, zip.WithOperationID("list_form_responses"))
 	g.Get("/forms/:id/responses/:response", s.getResponse, zip.WithOperationID("get_form_response"))
 	g.Delete("/forms/:id/responses/:response", s.deleteResponse, zip.WithOperationID("delete_form_response"), zip.WithStatus(http.StatusNoContent))
+	g.Post("/forms/:id/responses/:response/file", s.refile, zip.WithOperationID("file_form_response"))
 
 	g.Get("/forms/:id/webhooks", s.listWebhooks, zip.WithOperationID("list_form_webhooks"))
 	g.Post("/forms/:id/webhooks", s.createWebhook, zip.WithOperationID("create_form_webhook"), zip.WithStatus(http.StatusCreated))

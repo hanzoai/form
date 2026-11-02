@@ -20,7 +20,10 @@ type client struct {
 	ctx   context.Context
 	base  string
 	token string
-	http  *http.Client
+	// org is the org the records land in, named on every call: a bearer that
+	// administers several orgs is pointed at this one, never at its home by default.
+	org  string
+	http *http.Client
 	// pause is the first wait before a retry; it doubles, to at most a minute.
 	pause time.Duration
 	// tries is how many times a call is made before its error is the answer.
@@ -40,6 +43,7 @@ func (c *client) call(method, path string, in, out any) error {
 			return err
 		}
 		req.Header.Set("Authorization", "Bearer "+c.token)
+		req.Header.Set("X-Org-Id", c.org)
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := c.http.Do(req)
 		if err == nil {

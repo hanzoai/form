@@ -79,7 +79,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	im := &importer{
 		src:    src,
 		name:   "commerce/" + *store + "/" + *org,
-		api:    &client{ctx: ctx, base: *api, token: *token, http: &http.Client{Timeout: 2 * time.Minute}, pause: time.Second, tries: 10},
+		api:    &client{ctx: ctx, base: *api, token: *token, org: *org, http: &http.Client{Timeout: 2 * time.Minute}, pause: time.Second, tries: 10},
 		cursor: *cursor,
 		file:   *file,
 		out:    out,

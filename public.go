@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"mime"
 	"net/http"
 	"regexp"
 	"strings"
@@ -94,13 +95,46 @@ type Submission struct {
 
 // UnmarshalJSON records the body's size and whether it decoded, and refuses
 // nothing: the op judges, in its order.
+//
+// A body past BodyCeiling is not decoded at all: its size is recorded, the op
+// refuses it, and not one of its answers is ever allocated.
 func (in *Submission) UnmarshalJSON(b []byte) error {
+	if len(b) > BodyCeiling {
+		*in = Submission{size: len(b)}
+		return nil
+	}
 	type body Submission
 	var v body
 	malformed := json.Unmarshal(b, &v) != nil
 	*in = Submission(v)
 	in.size, in.malformed = len(b), malformed
 	return nil
+}
+
+// guardedKey marks a request the public guard has already judged.
+type guardedKey struct{}
+
+// guard judges a submission before its body is decoded: it is application/json
+// (a cross-site form or a no-cors fetch cannot send one without asking first),
+// its address has a submission left in the window, and it is inside the
+// platform's body bound. A read passes through.
+func (s *service) guard(c *zip.Ctx) error {
+	if c.Method() != http.MethodPost {
+		return c.Next()
+	}
+	ctx := c.Context()
+	if t, _, err := mime.ParseMediaType(c.Header("Content-Type")); err != nil || t != "application/json" {
+		return zip.Errorf(http.StatusUnsupportedMediaType, "form: a submission is application/json")
+	}
+	st := s.settings(ctx)
+	if !s.allowed(ctx, "form:response", s.d.Client(ctx).IP, st) {
+		return zip.Errorf(http.StatusTooManyRequests, "form: too many submissions; try again later")
+	}
+	if n := len(c.Body()); n > st.Limits.Body {
+		return zip.Errorf(http.StatusRequestEntityTooLarge, "form: the submission is larger than %d bytes", st.Limits.Body)
+	}
+	c.SetContext(context.WithValue(ctx, guardedKey{}, true))
+	return c.Next()
 }
 
 // Receipt is what a submission is answered.
@@ -174,7 +208,7 @@ func (s *service) publicForm(ctx context.Context, in *PublicRef) (*PublicForm, e
 	}
 	c := s.d.Client(ctx)
 	st := s.settings(ctx)
-	if f.Sinks != nil && f.Sinks.Events && !c.OptedOut && s.allowed(ctx, "form:view:"+c.IP, st) {
+	if f.Sinks != nil && f.Sinks.Events && !c.OptedOut && s.allowed(ctx, "form:view", c.IP, st) {
 		s.emit(ctx, org, Event{Name: Viewed, Form: f.ID, Public: f.PublicID})
 	}
 	return out, nil
@@ -182,11 +216,11 @@ func (s *service) publicForm(ctx context.Context, in *PublicRef) (*PublicForm, e
 
 // allowed spends one of the address's submissions; a caller with no address is
 // inside the cluster.
-func (s *service) allowed(ctx context.Context, key string, st Settings) bool {
-	if strings.HasSuffix(key, ":") || s.d.Allow == nil {
+func (s *service) allowed(ctx context.Context, name, ip string, st Settings) bool {
+	if s.d.Allow == nil {
 		return true
 	}
-	return s.d.Allow(ctx, key, st.Limits.Rate, st.window())
+	return s.d.Allow(ctx, name, ip, st.Limits.Rate, st.window())
 }
 
 // Answers a published form. No credential is needed.
@@ -215,7 +249,9 @@ func (s *service) allowed(ctx context.Context, key string, st Settings) bool {
 func (s *service) submit(ctx context.Context, in *Submission) (*Receipt, error) {
 	st := s.settings(ctx)
 	c := s.d.Client(ctx)
-	if !s.allowed(ctx, "form:response:"+c.IP, st) {
+	// The route's guard has judged the rate and the size already; a submission
+	// reaching the op another way is judged here.
+	if guarded, _ := ctx.Value(guardedKey{}).(bool); !guarded && !s.allowed(ctx, "form:response", c.IP, st) {
 		return nil, zip.Errorf(http.StatusTooManyRequests, "form: too many submissions; try again later")
 	}
 	if in.size > st.Limits.Body {
@@ -272,10 +308,11 @@ func (s *service) submit(ctx context.Context, in *Submission) (*Receipt, error) 
 	}
 
 	who := s.respondent(ctx, *f, answers, visitor)
+	// Every submission is its own response under its token, a subscribe form's
+	// too: an address typed first is not the address's for good, and a later
+	// submission from it is recorded in full. Its list is joined once: the CRM
+	// keys a membership by the person.
 	id := derived("response", f.ID+"\x00"+token)
-	if email := strings.ToLower(textOf(*f, answers, subscriber(*f))); f.Kind == Subscribe && email != "" {
-		id = derived("response", f.ID+"\x00"+email)
-	}
 	now := s.d.Now().UTC()
 	held, err := s.d.Store.Get(ctx, org, Responses, id)
 	switch {
@@ -291,7 +328,9 @@ func (s *service) submit(ctx context.Context, in *Submission) (*Receipt, error) 
 	}
 	rec := Record{
 		"id": id, "form": f.ID, "token": token, "completed": completed, "answers": answers, "hidden": hidden,
-		"respondent": who, "email": who.Email, "person": who.PersonID, "last": last(answers), "path": path, "source": "web",
+		// The email column is a verified address only: it is what a welcome is
+		// counted by, and a claim is nobody's.
+		"respondent": who, "email": verifiedEmail(who), "person": who.PersonID, "last": last(answers), "path": path, "source": "web",
 	}
 	if held == nil {
 		rec["at"] = baseTime(now)
@@ -316,7 +355,12 @@ func (s *service) submit(ctx context.Context, in *Submission) (*Receipt, error) 
 	}
 	out := &Receipt{ID: id, Completed: completed}
 	if f.Sinks != nil && f.Sinks.Events && !c.OptedOut {
-		ev := Event{Form: f.ID, Public: f.PublicID, Response: id, PersonID: who.PersonID, Visitor: who.Visitor, Fields: refs(answers)}
+		// A claimed address is nobody's on the event stream: only a signed-in
+		// respondent is a person there.
+		ev := Event{Form: f.ID, Public: f.PublicID, Response: id, Visitor: who.Visitor, Fields: refs(answers)}
+		if who.Verified {
+			ev.PersonID = who.PersonID
+		}
 		if held == nil {
 			ev.Name = Started
 			s.emit(ctx, org, ev)
@@ -345,9 +389,10 @@ func (s *service) respondent(ctx context.Context, f Form, answers []Answer, visi
 	c := s.d.Caller(ctx)
 	if c.Subject != "" && address(c.Email) {
 		email := strings.ToLower(c.Email)
-		return Respondent{Kind: "account", Subject: c.Subject, Email: email, PersonID: s.d.Person(email), Visitor: visitor}
+		return Respondent{Kind: "account", Subject: c.Subject, Email: email, PersonID: s.d.Person(email), Visitor: visitor, Verified: true}
 	}
-	if email := strings.ToLower(textOf(f, answers, emailRef(f))); address(email) {
+	// A typed address is a claim, and only a form that takes claims records one.
+	if email := strings.ToLower(textOf(f, answers, emailRef(f))); f.Settings.Identity != Verified && address(email) {
 		return Respondent{Kind: "email", Email: email, PersonID: s.d.Person(email), Visitor: visitor}
 	}
 	if visitor != "" {
@@ -408,3 +453,11 @@ func containsString(list []string, s string) bool {
 }
 
 func quote(s string) string { return `"` + clip(s, 64) + `"` }
+
+// verifiedEmail is the respondent's address when it is verified, else none.
+func verifiedEmail(r Respondent) string {
+	if r.Verified {
+		return r.Email
+	}
+	return ""
+}

@@ -39,6 +39,14 @@ const (
 // Kinds is every kind a form may be.
 var Kinds = []string{Plain, Subscribe}
 
+// The identity policies a form answers under (Options.Identity).
+const (
+	// Claimed takes a typed address as the respondent's claim, filed unverified.
+	Claimed = "claimed"
+	// Verified takes only a signed-in respondent as anyone.
+	Verified = "verified"
+)
+
 // Form is one form: what it asks, how it looks, and where its responses go.
 type Form struct {
 	// ID is the form's id: 15 lowercase hex characters, derived from the slug when
@@ -167,6 +175,15 @@ type Options struct {
 	Progress bool `json:"progress"`
 	// Mode is one (a question at a time, the default) or all (every question at once).
 	Mode string `json:"mode"`
+	// Identity is who a response is from when nobody is signed in. claimed (the
+	// default): an address typed into an email field is the respondent's CLAIM,
+	// filed on the CRM marked unverified, on the person it names only when the CRM
+	// already holds them and without changing them; it joins no list and is mailed
+	// no welcome, and a list's consent is asked by the double opt-in instead.
+	// verified: only a signed-in respondent (their token) is anyone; a typed
+	// address is an answer and nothing more. A signed-in respondent is verified
+	// under either.
+	Identity string `json:"identity"`
 }
 
 // Sinks are where a completed response goes, beside the form's own responses.
@@ -274,6 +291,9 @@ type Respondent struct {
 	// membership, an email event and an experiment share. Every event and
 	// timeline entry the service states carries it, never the address.
 	PersonID string `json:"person_id,omitempty"`
+	// Verified is whether the respondent is who the response says: true only
+	// for a signed-in person, from their token. A typed address is a claim.
+	Verified bool `json:"verified"`
 	// Visitor is the page's visitor id.
 	Visitor string `json:"visitor,omitempty"`
 }
@@ -309,6 +329,11 @@ type Response struct {
 	Source string `json:"source"`
 	// External is an imported response's id where it came from.
 	External string `json:"external,omitempty"`
+	// Filed is whether a completed response is on the CRM's timeline. A filing
+	// that failed is tried again on a schedule, and POST .../file tries it now.
+	Filed bool `json:"filed"`
+	// Filing is why the last filing failed; empty once it is filed.
+	Filing string `json:"filing,omitempty"`
 	// Created is when the record was first written, RFC 3339.
 	Created string `json:"created,omitempty"`
 	// Updated is when it last changed, RFC 3339.
@@ -329,7 +354,8 @@ type Webhook struct {
 	Enabled bool `json:"enabled"`
 	// Secret is the signing secret, answered once: when the webhook is made or
 	// its secret is set or rotated. Every delivery carries Hanzo-Signature:
-	// sha256=<base64 of HMAC-SHA256(secret, body)>. It is kept in KMS and never
+	// t=<unix seconds>,sha256=<base64 of HMAC-SHA256(secret, "<seconds>." + body)>;
+	// a receiver refuses one older than five minutes. It is kept in KMS and never
 	// read back.
 	Secret string `json:"secret,omitempty"`
 	// Created is when the webhook was made, RFC 3339.

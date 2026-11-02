@@ -150,6 +150,9 @@ func (im *importer) form(o Origin, slug string, from *mark) error {
 	if o.Welcome {
 		fmt.Fprintf(im.out, "%s: welcome mail not carried: commerce holds a provider template id, not a text body\n", slug)
 	}
+	if o.Forward != "" {
+		fmt.Fprintf(im.out, "%s: forward to %s not carried: the form arrives unpublished and mails nobody until its org sets one\n", slug, o.Forward)
+	}
 	if err := im.api.call("PUT", "/v1/form/forms/"+slug, f, nil); err != nil {
 		return err
 	}
@@ -296,18 +299,18 @@ func slugOf(id string, seen map[string]string) (string, error) {
 // define is the form an origin becomes, and the field ref of each metadata key:
 // an email field (required on a subscribe form) and a short_text field per key.
 func define(o Origin, slug string, keys map[string]bool) (form.Form, map[string]string) {
+	// An imported form arrives unpublished and mails nobody: its org reviews it,
+	// then publishes it and names a forward or a welcome itself.
 	f := form.Form{
 		ID: slug, Slug: slug, Kind: form.Plain, Title: o.Name,
-		Fields: []form.Field{{Ref: "email", Type: form.Email, Title: "Email"}},
-		Sinks:  &form.Sinks{},
+		Fields:   []form.Field{{Ref: "email", Type: form.Email, Title: "Email"}},
+		Settings: form.Options{Visibility: "private"},
+		Sinks:    &form.Sinks{},
 	}
 	if o.Type == "subscribe" {
 		f.Kind = form.Subscribe
 		f.Fields[0].Required = true
 		f.Sinks.CRM = &form.CRM{List: o.Name}
-	}
-	if o.Forward != "" {
-		f.Sinks.Forward = &form.Forward{Email: o.Forward, Name: o.Recipient}
 	}
 	if u, err := url.Parse(o.URL); o.Thanks == "redirect" && err == nil && u.Scheme == "https" && u.Host != "" {
 		f.Thanks = &form.Screen{Redirect: o.URL}

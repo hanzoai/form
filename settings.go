@@ -40,6 +40,10 @@ type TypeRule struct {
 	Max int `json:"max"`
 }
 
+// BodyCeiling is the most bytes any submission's body may hold, whatever the
+// settings say: a body past it is refused before a byte of it is decoded.
+const BodyCeiling = 1 << 20
+
 // Limits bound every form and every submission.
 type Limits struct {
 	// Fields is the most fields one form has.
@@ -54,6 +58,12 @@ type Limits struct {
 	Window int `json:"window"`
 	// Webhooks is the most webhooks one form has.
 	Webhooks int `json:"webhooks"`
+	// Forward is how many responses one form forwards to its address in an hour;
+	// past it the response is kept and not mailed.
+	Forward int `json:"forward"`
+	// Welcome is how many welcome mails one form sends in an hour, counted apart
+	// from its forwards so a flood of one cannot silence the other.
+	Welcome int `json:"welcome"`
 }
 
 // Defaults is the configuration the service runs with when none is saved.
@@ -68,7 +78,7 @@ func Defaults() Settings {
 	}
 	return Settings{
 		Types:  types,
-		Limits: Limits{Fields: 100, Hidden: 10, Body: 64 << 10, Rate: 30, Window: 3600, Webhooks: 10},
+		Limits: Limits{Fields: 100, Hidden: 10, Body: 64 << 10, Rate: 30, Window: 3600, Webhooks: 10, Forward: 60, Welcome: 60},
 		Sinks:  Sinks{Events: true, CRM: &CRM{}},
 	}
 }
@@ -120,8 +130,9 @@ func (st Settings) Check() (Settings, []string) {
 		name      string
 		v, lo, hi int
 	}{
-		{"fields", l.Fields, 1, 500}, {"hidden", l.Hidden, 0, 50}, {"body", l.Body, 1 << 10, 1 << 20},
+		{"fields", l.Fields, 1, 500}, {"hidden", l.Hidden, 0, 50}, {"body", l.Body, 1 << 10, BodyCeiling},
 		{"rate", l.Rate, 1, 10000}, {"window", l.Window, 1, 86400}, {"webhooks", l.Webhooks, 0, 50},
+		{"forward", l.Forward, 0, 10000}, {"welcome", l.Welcome, 0, 10000},
 	} {
 		if b.v < b.lo || b.v > b.hi {
 			problems = append(problems, fmt.Sprintf("limits.%s is %d to %d", b.name, b.lo, b.hi))

@@ -36,17 +36,28 @@ const (
 	maxWelcome     = 10000
 )
 
+// visible is s without its format characters (Unicode Cf): the bidirectional
+// overrides and zero-width runes that make text read as something it is not.
+func visible(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // line is s trimmed, when it is one line of printable text of at most n
-// characters; ok is false otherwise.
+// characters; ok is false otherwise. Format characters are dropped first.
 func line(s string, n int) (string, bool) {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(visible(s))
 	return s, utf8.ValidString(s) && utf8.RuneCountInString(s) <= n && !strings.ContainsFunc(s, unicode.IsControl)
 }
 
 // prose is s trimmed, when it is text of at most n characters with no control
 // character but line breaks and tabs.
 func prose(s string, n int) (string, bool) {
-	s = strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+	s = strings.TrimSpace(strings.ReplaceAll(visible(s), "\r\n", "\n"))
 	return s, utf8.ValidString(s) && utf8.RuneCountInString(s) <= n &&
 		!strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' })
 }
@@ -65,6 +76,13 @@ func https(s string) (string, bool) {
 // before it and a dotted domain after it, and none of the characters that join or
 // quote a second address.
 func address(s string) bool {
+	for i := 0; i < len(s); i++ {
+		// ASCII only: an internationalized domain arrives as its punycode, so a
+		// letter from another script cannot pass for a Latin one.
+		if s[i] < 0x21 || s[i] > 0x7e {
+			return false
+		}
+	}
 	local, domain, ok := strings.Cut(s, "@")
 	return ok && local != "" && len(s) <= 320 && !strings.ContainsAny(s, " \t\r\n,;%\"<>()[]\\") &&
 		!strings.Contains(domain, "@") && strings.Contains(strings.Trim(domain, "."), ".")
@@ -81,14 +99,20 @@ func checkForm(f Form, st Settings, held *Form) (Form, []string) {
 	if f.Slug != "" && !slugShape.MatchString(f.Slug) {
 		bad("slug is lowercase letters, digits and dashes, at most 64")
 	}
-	if held != nil && held.Slug != "" && f.Slug != held.Slug {
-		bad("a form's slug is its id and does not change")
+	if held != nil && f.Slug != held.Slug {
+		bad("a form's slug is its id: it is set when the form is made and does not change")
 	}
 	if f.Kind = strings.TrimSpace(f.Kind); f.Kind == "" {
 		f.Kind = Plain
 	}
 	if !slices.Contains(Kinds, f.Kind) {
 		bad("kind is one of %s", strings.Join(Kinds, ", "))
+	}
+	if f.Settings.Identity = strings.TrimSpace(f.Settings.Identity); f.Settings.Identity == "" {
+		f.Settings.Identity = Claimed
+	}
+	if f.Settings.Identity != Claimed && f.Settings.Identity != Verified {
+		bad("settings.identity is claimed or verified")
 	}
 	var ok bool
 	if f.Title, ok = line(f.Title, maxTitle); !ok || f.Title == "" {
@@ -347,6 +371,9 @@ func checkSinks(s Sinks, f *Form) (Sinks, []string) {
 			}
 		}
 		return ""
+	}
+	if f == nil && (s.Forward != nil || s.Welcome != nil) {
+		p = append(p, "the platform's default sinks name no forward or welcome: an address to mail is each form's own")
 	}
 	if c := s.CRM; c != nil {
 		for _, m := range []struct {
