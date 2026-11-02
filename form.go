@@ -123,6 +123,9 @@ type Confirmation struct {
 	Email, List string
 	// Form is the form's id, Public its public id: where the ask came from.
 	Form, Public string
+	// IP is the submitter's address, so the host counts the ask against it as
+	// it counts the public subscribe's.
+	IP string
 }
 
 // QA is one question and what was said to it, as text.

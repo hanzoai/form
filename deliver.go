@@ -47,14 +47,20 @@ const (
 // attemptBudget bounds one post.
 const attemptBudget = 10 * time.Second
 
-// Bounds on deliveries, so no org's receivers hold another org's posts.
+// Bounds on deliveries, so no org's receivers hold another org's posts and no
+// set of orgs fills the queue for the rest.
 const (
 	// perOrg is how many posts one org has in flight at once.
 	perOrg = 4
 	// queuedOrg is how many deliveries one org has waiting, on a retry or a slot.
 	queuedOrg = 200
-	// queuedAll is how many deliveries the process has waiting in all.
+	// queuedAll is the shared pool: deliveries past an org's reserve take a
+	// place in it, and when it is full only reserves are left.
 	queuedAll = 2000
+	// reserve is what every org may have waiting whatever the pool holds.
+	reserve = 5
+	// queuedMost is the process's hard bound on everything waiting.
+	queuedMost = 4000
 )
 
 // deliverer posts responses to webhooks: each org through its own few slots, and
@@ -64,13 +70,16 @@ type deliverer struct {
 	s    *service
 	mu   sync.Mutex
 	orgs map[string]*lane
-	all  int
+	// all is everything waiting; shared what of it is past its org's reserve.
+	all, shared int
 }
 
 // lane is one org's slots and how many of its deliveries wait.
 type lane struct {
 	slots  chan struct{}
 	queued int
+	// pooled is how many of queued hold a place in the shared pool.
+	pooled int
 }
 
 func newDeliverer(s *service) *deliverer {
@@ -100,8 +109,15 @@ func (d *deliverer) take(org string) (*lane, bool) {
 		l = &lane{slots: make(chan struct{}, perOrg)}
 		d.orgs[org] = l
 	}
-	if l.queued >= queuedOrg || d.all >= queuedAll {
+	switch {
+	case d.all >= queuedMost, l.queued >= queuedOrg:
 		return nil, false
+	case l.queued >= reserve && d.shared >= queuedAll:
+		return nil, false
+	}
+	if l.queued >= reserve {
+		d.shared++
+		l.pooled++
 	}
 	l.queued++
 	d.all++
@@ -114,6 +130,10 @@ func (d *deliverer) give(org string, l *lane) {
 	defer d.mu.Unlock()
 	l.queued--
 	d.all--
+	if l.pooled > 0 {
+		l.pooled--
+		d.shared--
+	}
 	if l.queued == 0 {
 		delete(d.orgs, org)
 	}
@@ -184,8 +204,10 @@ func (d *deliverer) record(ctx context.Context, org string, f Form, r Response, 
 	return dl
 }
 
-// errBlocked is an address the dialler refused: one not on the public internet.
-var errBlocked = errors.New("blocked address")
+// errBlocked is an address the dialler refused, one not on the public internet. It
+// reads exactly as an address that did not resolve or answer, so the log is no
+// oracle for what a name resolves to.
+var errBlocked = errors.New("the address could not be reached")
 
 // failure is a post's error as the delivery log says it: what kind of failure,
 // never the address dialled or what a name resolved to.
@@ -273,7 +295,11 @@ type PostedResponse struct {
 	Hidden      map[string]string `json:"hidden,omitempty"`
 	Definition  PostedDefinition  `json:"definition"`
 	Answers     []Answer          `json:"answers"`
-	PersonID    string            `json:"person_id,omitempty"`
+	// PersonID is the CRM person the respondent is, set only when Verified.
+	PersonID string `json:"person_id,omitempty"`
+	// Verified is whether the respondent signed in: an address typed into the
+	// form is a claim, and names nobody here.
+	Verified bool `json:"verified"`
 }
 
 // PostedDefinition is the form as a delivery names it.
@@ -298,8 +324,16 @@ func payload(f Form, r Response, event string) Posted {
 	}
 	return Posted{EventID: event, EventType: "form_response", FormResponse: PostedResponse{
 		FormID: f.ID, PublicID: f.PublicID, Token: r.Token, LandedAt: r.LandedAt, SubmittedAt: r.SubmittedAt,
-		Hidden: r.Hidden, Definition: def, Answers: r.Answers, PersonID: r.Respondent.PersonID,
+		Hidden: r.Hidden, Definition: def, Answers: r.Answers, Verified: r.Respondent.Verified, PersonID: verifiedPerson(r.Respondent),
 	}}
+}
+
+// verifiedPerson is the respondent's person when they are verified, else none.
+func verifiedPerson(r Respondent) string {
+	if r.Verified {
+		return r.PersonID
+	}
+	return ""
 }
 
 // deliveryOf is a stored delivery as the wire carries it.

@@ -62,13 +62,19 @@ response; subscribe = derived(form, address); import = derived(form, external).
   is final; `completed:false` saves part way under the token.
 - The public POST is guarded before decoding: application/json only (415), the
   address's rate (429; the host counts /64 and /48, an empty address is one shared
-  budget), and the body bound (413). A body past `BodyCeiling` (1 MiB) is never
-  decoded, whatever path it took.
+  budget), and the body bound (413). The op itself decodes the body only after
+  the rate and the size, so MCP and the call plane are judged in the same order,
+  and a body past `BodyCeiling` (1 MiB) is never decoded. A refusal names at most
+  20 problems.
 - Sinks run after the response is stored. The CRM filing is recorded on the
   response (`filed`, `filing`), retried on the delivery schedule, listed with
-  `?filed=false` and filed now by POST `.../responses/{response}/file`. Webhook
-  deliveries run four at a time per org with at most 200 waiting per org (2000 in
-  all); past that a delivery is recorded failed and `retry` sends it. Retries live
+  `?filed=false` and filed now by POST `.../responses/{response}/file`; a
+  response deleted meanwhile is never filed or written back, and retries wait at
+  most 100 per org (1000 in all). Webhook deliveries run four at a time per org;
+  each org has 5 waiting places of its own and up to 200 in all, the rest from a
+  shared pool of 2000; past that a delivery is recorded failed and `retry` sends
+  it. A delivery says `verified` and names `person_id` only for a signed-in
+  respondent. Retries live
   in-process; a restart leaves `retrying` with `next` in the past.
 - Webhook posts dial public addresses only (checked on the dialled IP), follow no
   redirect, read 4 KiB, and say only what kind of failure it was. Signature:

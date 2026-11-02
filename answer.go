@@ -51,7 +51,18 @@ func checkAnswers(f Form, in []Answer, st Settings) ([]Answer, []string) {
 			out = append(out, a)
 		}
 	}
-	return out, p
+	return out, few(p)
+}
+
+// fewMost is how many problems an answer names; the rest are counted.
+const fewMost = 20
+
+// few is problems as a refusal says them: the first fewMost, and how many more.
+func few(p []string) []string {
+	if len(p) <= fewMost {
+		return p
+	}
+	return append(p[:fewMost:fewMost], fmt.Sprintf("and %d more", len(p)-fewMost))
 }
 
 // missing are the required fields answers leave unanswered.

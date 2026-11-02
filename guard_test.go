@@ -144,7 +144,7 @@ func TestTheDeliveryLogNamesNoAddress(t *testing.T) {
 		}
 		return said != ""
 	})
-	if said != "blocked address" {
+	if said != "the address could not be reached" {
 		t.Fatalf("the log says %q", said)
 	}
 }
