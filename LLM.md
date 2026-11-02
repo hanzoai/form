@@ -65,6 +65,32 @@ response; subscribe = derived(form, address); import = derived(form, external).
   identified/anonymous, scoring) and adds fields, never changes one.
 - Logic jumps are not served.
 
+## @hanzo/form (`packages/form`)
+
+The public half as an npm package (ESM + types, React and react-dom as peers),
+its own pnpm root. One entry, `src/index.ts`:
+
+- `load(publicId, {endpoint?})`, `submit(publicId, submission, {endpoint?, token?})`
+  (`client.ts`): `token` is an IAM bearer sent as Authorization, never in the
+  body. A non-2xx throws `Problem` (`status`, and the problem document's
+  `detail` as the message).
+- `check(field, value)` (`check.ts`): `answer.go`'s `checkAnswer` in the browser,
+  the same shapes and bounds (it cannot know the platform's per-type maximum, so
+  an unbounded text field is judged by the service alone). `submission()` sends
+  only the hidden names the form declares; `mint()` is the idempotency token.
+- `Form` (`form.tsx`, styles in `style.ts` under `.hzform`): `form` or
+  `publicId`, plus `hidden`, `endpoint`, `token`, `visitor`, `onSubmit`,
+  `hideHeaders`, `hideFooter`. One token per mount; thanks only after a 2xx;
+  a refusal is the service's words with every answer kept. Enter moves on, a
+  digit picks, Escape is the browser's. Theme colours become `--hzform-*`.
+- `createWidget(publicId, {container, opacity, ...})` (`widget.ts`): `opacity`
+  is `--hzform-opacity` on the container, read by the background layer alone.
+
+`pnpm typecheck && pnpm build && pnpm test` (vitest: validation, the submission
+shape, the client) and `pnpm e2e` (Playwright: the embed against routed
+api.hanzo.ai — drawing, 375/360 widths, keyboard, thanks after a 201, a double
+click, a refusal). Screenshots land in `test-results/`.
+
 ## Develop
 
 `go test ./...` (the in-memory Store in memory_test.go reads the where clauses
