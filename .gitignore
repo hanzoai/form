@@ -1,0 +1,15 @@
+# Go
+*.test
+*.out
+*.prof
+/bin/
+
+# Packages
+node_modules/
+dist/
+
+# Local symlinks to LLM.md
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+QWEN.md

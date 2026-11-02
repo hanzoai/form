@@ -1,0 +1,11 @@
+# CI/CD for hanzoai/form, read by the hanzoai/ci reusable (.github/workflows/cicd.yml)
+# and by platform.hanzo.ai. A Go module embedded by hanzo-inc/cloud: it ships from a
+# tag and builds no image.
+
+test:
+  - name: build
+    run: go build ./...
+  - name: vet
+    run: go vet ./...
+  - name: test
+    run: go test -count=1 ./...
